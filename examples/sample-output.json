@@ -1,30 +1,102 @@
 {
-  "_note": "这是一个示例输出文件，展示抓取结果的数据格式",
+  "_note": "v2 示例输出 -- 每条岗位都有详情页 URL + 结构化字段",
+
   "minimax": {
     "name": "MiniMax",
     "url": "https://vrfi1sk8a0.jobs.feishu.cn/",
+    "type": "feishu",
     "scrapedAt": "2026-03-06T10:30:00.000Z",
     "jobCount": 5,
+    "jobsWithUrl": 5,
     "jobs": [
       {
-        "title": "AIGC产品经理-海螺AI方向 北京、上海 社招全职",
+        "title": "AIGC产品经理-海螺AI方向",
         "url": "https://vrfi1sk8a0.jobs.feishu.cn/index/position/7579523111286147366/detail",
-        "source": "link"
+        "location": "北京、上海",
+        "jobType": "社招全职",
+        "department": "产品/策划/项目"
       },
       {
-        "title": "大模型产品经理--开放平台方向 上海、北京 社招全职",
+        "title": "大模型产品经理--开放平台方向",
         "url": "https://vrfi1sk8a0.jobs.feishu.cn/index/position/7197008071825197349/detail",
-        "source": "link"
+        "location": "上海、北京",
+        "jobType": "社招全职",
+        "department": "产品/策划/项目"
       },
       {
-        "title": "AI安全产品经理 上海、北京 社招全职",
+        "title": "AIGC产品经理-AI Agent方向",
+        "url": "https://vrfi1sk8a0.jobs.feishu.cn/index/position/7602540620574099722/detail",
+        "location": "上海",
+        "jobType": "社招全职",
+        "department": "产品/策划/项目"
+      },
+      {
+        "title": "AI安全产品经理",
         "url": "https://vrfi1sk8a0.jobs.feishu.cn/index/position/7312426034698619162/detail",
-        "source": "link"
+        "location": "上海、北京",
+        "jobType": "社招全职",
+        "department": "产品/策划/项目"
+      },
+      {
+        "title": "智能交互体验设计师（AI产品方向）",
+        "url": "https://vrfi1sk8a0.jobs.feishu.cn/index/position/7563932752576268607/detail",
+        "location": "上海",
+        "jobType": "社招全职",
+        "department": "互联网/电子/网游"
       }
     ]
   },
+
+  "bytedance": {
+    "name": "字节跳动",
+    "url": "https://jobs.bytedance.com/experienced/position?category=6704215862603155720&location=CT_51",
+    "type": "bytedance",
+    "scrapedAt": "2026-03-06T10:35:00.000Z",
+    "jobCount": 3,
+    "jobsWithUrl": 3,
+    "_note_v1_vs_v2": "v1 只抓到 '产品与技术' 导航链接; v2 抓到每条的 /position/{ID} 详情URL",
+    "jobs": [
+      {
+        "title": "豆包AI大模型策略产品经理（海外市场）Seed",
+        "url": "https://jobs.bytedance.com/experienced/position/7483791481535432978",
+        "location": "上海"
+      },
+      {
+        "title": "商品AIGC产品经理",
+        "url": "https://jobs.bytedance.com/experienced/position/7501234567890123456",
+        "location": "上海"
+      }
+    ]
+  },
+
+  "tencent": {
+    "name": "腾讯",
+    "url": "https://careers.tencent.com/search.html?pcid=40001&locationId=2156",
+    "type": "tencent",
+    "scrapedAt": "2026-03-06T10:40:00.000Z",
+    "jobCount": 4,
+    "jobsWithUrl": 4,
+    "_note_v1_vs_v2": "v1 抓到 '技术运营类' 分类标签; v2 提取岗位标题+城市+部门+通过点击获取URL",
+    "jobs": [
+      {
+        "title": "元宝-大模型产品经理",
+        "url": "https://careers.tencent.com/jobdesc.html?postId=1234567",
+        "location": "上海",
+        "department": "CSIG",
+        "experience": "三年以上工作经验"
+      },
+      {
+        "title": "微信读书-AI应用产品经理",
+        "url": "https://careers.tencent.com/jobdesc.html?postId=2345678",
+        "location": "广州",
+        "department": "WXG",
+        "experience": "两年以上工作经验"
+      }
+    ]
+  },
+
   "boss_sample": {
-    "_note": "Boss直聘的数据格式（通过 CDP 或 AppleScript 抓取）",
+    "_note": "Boss直聘数据通过 boss-cdp.js 或 boss-applescript.sh 单独抓取",
     "jobs": [
       {
         "title": "AIGC产品经理",
@@ -34,15 +106,6 @@
         "tags": "3-5年|本科",
         "url": "https://www.zhipin.com/job_detail/88e63d1628a6bf1c03R-3tq6FldR.html",
         "searchTerm": "AIGC产品经理"
-      },
-      {
-        "title": "AI产品经理",
-        "company": "百度",
-        "salary": "25-50K",
-        "location": "上海·浦东新区·张江",
-        "tags": "经验不限|本科",
-        "url": "https://www.zhipin.com/job_detail/3ac3ef69616dcca81HR62tW4E1NT.html",
-        "searchTerm": "AI产品经理"
       }
     ]
   }

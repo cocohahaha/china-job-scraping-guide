@@ -18,6 +18,7 @@
 - [难点 5：LLM Agent 幻觉 -- 最隐蔽的陷阱](#难点-5llm-agent-幻觉----最隐蔽的陷阱)
 - [难点 6：各站点 DOM 结构各异](#难点-6各站点-dom-结构各异)
 - [难点 7：频率限制与验证码](#难点-7频率限制与验证码)
+- [难点 8：抓到的是平台总链接而非具体岗位](#难点-8抓到的是平台总链接而非具体岗位)
 - [最终架构](#最终架构)
 - [各平台攻克方案速查](#各平台攻克方案速查)
 - [脚本使用说明](#脚本使用说明)
@@ -509,6 +510,110 @@ end tell'
 console.log('WAIT_FOR_USER: 请在浏览器中完成验证码...');
 await new Promise(resolve => process.stdin.once('data', resolve));
 ```
+
+---
+
+## 难点 8：抓到的是平台总链接而非具体岗位
+
+### 问题
+
+v1 版本的通用提取器犯了一个很常见的错误：**把导航链接、分类标签、JD 正文碎片都当成了岗位**。
+
+实际抓取结果惨不忍睹：
+
+```json
+// 字节跳动：只抓到导航分类链接，实际岗位 0 条
+{ "title": "产品与技术", "url": "https://jobs.bytedance.com/experienced/page-AgCQiO" }
+
+// 腾讯：抓到的是分类标签
+{ "title": "技术运营类", "url": "https://careers.tencent.com/search.html?pcid=40001" }
+{ "title": "产品 产品类游戏产品类项目类金融类", "url": "" }
+
+// MiniMax：有 URL 的 5 条，无 URL 的碎片 30+ 条
+{ "title": "1、参与Agent产品各环节规划，制定产品战略与路线图...", "url": "" }
+```
+
+**根因分析：**
+1. **通用提取器太贪心** -- 只要文本含关键词就算岗位，导航栏的"产品"也被抓了
+2. **SPA 岗位卡片没有 `<a>` 标签** -- 很多 SPA 用 click handler 而非链接跳转
+3. **嵌套 DOM 导致重复** -- 同一岗位的 `<li>`、`<div>`、`<span>` 各匹配一次
+4. **不区分 URL 类型** -- `/page-xxx`（分类页）和 `/position/123456`（详情页）被同等对待
+
+### 解决方案：平台专用提取器 + URL 模式过滤 + 点击获取详情
+
+**核心改进 1：URL 模式过滤**
+
+```javascript
+// 只保留像岗位详情页的 URL，过滤掉导航/分类/筛选页
+function isJobDetailUrl(url) {
+  const detailPatterns = [
+    /\/position\/\d+/,        // 飞书: /position/7579523111286147366/detail
+    /\/job_detail\//,          // Boss直聘: /job_detail/88e63d16.html
+    /\/job\/\d+/,              // 通用
+    /[?&]id=\d+/,              // query 参数带 ID
+  ];
+  return detailPatterns.some(p => p.test(url));
+}
+```
+
+**核心改进 2：各平台专用提取器**
+
+```javascript
+// 字节跳动专用 -- 只找 /position/{数字ID} 的链接，过滤 /page-xxx 分类页
+document.querySelectorAll('a[href*="/position/"]').forEach(a => {
+  if (href.includes('/page-') || href.includes('/position?')) return; // 过滤导航
+  if (!/\/position\/\d+/.test(href)) return;                          // 必须有数字ID
+  // ... 提取
+});
+
+// 飞书门户专用 -- 只找 /position/{ID}/detail 的链接
+document.querySelectorAll('a[href*="/position/"]').forEach(a => {
+  if (!href.includes('/detail') && !href.match(/\/position\/\d+/)) return;
+  // ... 提取标题、城市、类别
+});
+
+// 腾讯专用 -- SPA 没有链接，需要从卡片结构和点击行为获取
+// 先从 DOM 提取标题，再逐个点击卡片获取跳转后的 URL
+```
+
+**核心改进 3：点击卡片获取详情 URL**
+
+```javascript
+// 腾讯等 SPA 站点：岗位卡片只有 click handler，没有 <a> 标签
+// 解决：自动逐个点击卡片，读取跳转后的 URL
+const cards = await page.$$('[class*="job-item"]');
+for (let i = 0; i < cards.length; i++) {
+  await cards[i].click();
+  await page.waitForTimeout(1500);
+  const detailUrl = page.url();  // 点击后 SPA 路由变化，读取新 URL
+  allJobs[i].url = detailUrl;
+  await page.goBack();
+}
+```
+
+**核心改进 4：自动翻页**
+
+```javascript
+// 每个提取器都支持翻页，默认 3 页
+for (let p = 0; p < maxPages; p++) {
+  const jobs = await extractCurrentPage(page);
+  allJobs.push(...jobs);
+  // 尝试点击下一页
+  const nextBtn = page.locator('[class*="next"]:not([class*="disabled"])');
+  if (await nextBtn.isVisible()) {
+    await nextBtn.click();
+    await page.waitForTimeout(3000);
+  } else break;
+}
+```
+
+### 修复前后对比
+
+| 平台 | v1 结果 | v2 结果 |
+|------|---------|---------|
+| 字节跳动 | 1 条导航链接 + 1 条筛选器文本 | 每条都有 `/position/{ID}` 详情链接 |
+| 腾讯 | 1 条分类链接 + 一堆无 URL 碎片 | 结构化提取标题/城市/部门 + 点击获取 URL |
+| MiniMax (飞书) | 5 条有 URL + 30 条 JD 碎片 | 只保留有 `/position/{ID}/detail` 的条目 |
 
 ---
 
