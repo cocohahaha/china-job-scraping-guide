@@ -1,0 +1,28 @@
+{
+  "name": "china-job-scraping-guide",
+  "version": "1.0.0",
+  "description": "Practical guide and scripts for scraping Chinese job sites (Boss直聘, 飞书招聘, 字节跳动, 腾讯 etc.)",
+  "scripts": {
+    "scrape": "node scripts/scrape-jobs.js",
+    "scrape:list": "node scripts/scrape-jobs.js --site list",
+    "boss:cdp": "node scripts/boss-cdp.js",
+    "boss:applescript": "bash scripts/boss-applescript.sh",
+    "browse": "node scripts/browse-interactive.js"
+  },
+  "keywords": [
+    "china",
+    "job-scraping",
+    "boss-zhipin",
+    "playwright",
+    "cdp",
+    "feishu",
+    "bytedance",
+    "tencent",
+    "anti-bot",
+    "web-scraping"
+  ],
+  "dependencies": {
+    "playwright": "^1.50.0"
+  },
+  "license": "MIT"
+}

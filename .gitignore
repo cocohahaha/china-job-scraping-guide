@@ -1,0 +1,7 @@
+node_modules/
+.env
+*.log
+/tmp/
+docs/apply-screenshots/
+docs/round*/scraped-jobs/*.png
+state.json

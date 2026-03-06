@@ -1,0 +1,49 @@
+{
+  "_note": "这是一个示例输出文件，展示抓取结果的数据格式",
+  "minimax": {
+    "name": "MiniMax",
+    "url": "https://vrfi1sk8a0.jobs.feishu.cn/",
+    "scrapedAt": "2026-03-06T10:30:00.000Z",
+    "jobCount": 5,
+    "jobs": [
+      {
+        "title": "AIGC产品经理-海螺AI方向 北京、上海 社招全职",
+        "url": "https://vrfi1sk8a0.jobs.feishu.cn/index/position/7579523111286147366/detail",
+        "source": "link"
+      },
+      {
+        "title": "大模型产品经理--开放平台方向 上海、北京 社招全职",
+        "url": "https://vrfi1sk8a0.jobs.feishu.cn/index/position/7197008071825197349/detail",
+        "source": "link"
+      },
+      {
+        "title": "AI安全产品经理 上海、北京 社招全职",
+        "url": "https://vrfi1sk8a0.jobs.feishu.cn/index/position/7312426034698619162/detail",
+        "source": "link"
+      }
+    ]
+  },
+  "boss_sample": {
+    "_note": "Boss直聘的数据格式（通过 CDP 或 AppleScript 抓取）",
+    "jobs": [
+      {
+        "title": "AIGC产品经理",
+        "company": "MiniMax",
+        "salary": "30-60K",
+        "location": "上海·徐汇区·漕河泾",
+        "tags": "3-5年|本科",
+        "url": "https://www.zhipin.com/job_detail/88e63d1628a6bf1c03R-3tq6FldR.html",
+        "searchTerm": "AIGC产品经理"
+      },
+      {
+        "title": "AI产品经理",
+        "company": "百度",
+        "salary": "25-50K",
+        "location": "上海·浦东新区·张江",
+        "tags": "经验不限|本科",
+        "url": "https://www.zhipin.com/job_detail/3ac3ef69616dcca81HR62tW4E1NT.html",
+        "searchTerm": "AI产品经理"
+      }
+    ]
+  }
+}
