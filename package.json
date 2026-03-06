@@ -1,25 +1,29 @@
 {
-  "name": "china-job-scraping-guide",
-  "version": "1.0.0",
-  "description": "Practical guide and scripts for scraping Chinese job sites (Boss直聘, 飞书招聘, 字节跳动, 腾讯 etc.)",
+  "name": "china-web-scraper",
+  "version": "3.0.0",
+  "description": "Playwright-based scraping toolkit for Chinese mainland websites. Built-in SPA rendering, search box interaction, API interception, and anti-bot bypass.",
+  "main": "index.js",
   "scripts": {
-    "scrape": "node scripts/scrape-jobs.js",
-    "scrape:list": "node scripts/scrape-jobs.js --site list",
-    "boss:cdp": "node scripts/boss-cdp.js",
-    "boss:applescript": "bash scripts/boss-applescript.sh",
-    "browse": "node scripts/browse-interactive.js"
+    "example:basic": "node examples/basic.js",
+    "example:search": "node examples/search-and-filter.js",
+    "example:api": "node examples/api-intercept.js",
+    "example:multi": "node examples/multi-site.js",
+    "example:boss": "node examples/boss-cdp.js",
+    "browse": "node examples/browse-interactive.js"
   },
   "keywords": [
     "china",
-    "job-scraping",
-    "boss-zhipin",
+    "web-scraping",
     "playwright",
+    "spa",
+    "anti-bot",
     "cdp",
+    "api-intercept",
     "feishu",
     "bytedance",
     "tencent",
-    "anti-bot",
-    "web-scraping"
+    "bilibili",
+    "boss-zhipin"
   ],
   "dependencies": {
     "playwright": "^1.50.0"
