@@ -12,10 +12,10 @@
  *   { scroll: true }       → 滚动到页面底部
  */
 
-const { ChinaScraper } = require('../');
+const { ScrapeCN } = require('../');
 
 async function main() {
-  const scraper = new ChinaScraper();
+  const scraper = new ScrapeCN();
 
   try {
     const items = await scraper.scrape({

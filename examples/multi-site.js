@@ -1,52 +1,39 @@
 #!/usr/bin/env node
 /**
- * 批量抓取多个站点
+ * 批量抓取多个站点（需要 Playwright）
  *
- * 遍历所有预设站点，逐个抓取数据并汇总。
- * 每个站点使用独立的 page（避免同源问题），失败不影响其他站点。
+ * 用法：
+ *   node examples/multi-site.js                        # 全部站点
+ *   node examples/multi-site.js bytedance,tencent      # 指定站点
  */
 
-const { ChinaScraper, presets } = require('../');
+const { ScrapeCN, presets } = require('../');
 const fs = require('fs');
-const path = require('path');
 
-const OUTPUT_DIR = 'output/multi-site';
+const OUTPUT = 'output/multi-site/results.json';
 
 async function main() {
-  // 选择要抓取的站点（排除需要 CDP 的 boss）
-  const siteKeys = process.argv[2]
+  const keys = process.argv[2]
     ? process.argv[2].split(',')
     : Object.keys(presets).filter(k => k !== 'boss');
 
-  console.log(`将抓取 ${siteKeys.length} 个站点: ${siteKeys.join(', ')}\n`);
+  console.log(`抓取 ${keys.length} 个站点: ${keys.join(', ')}\n`);
 
-  const scraper = new ChinaScraper({ screenshotDir: path.join(OUTPUT_DIR, 'screenshots') });
-  const allResults = {};
+  const scraper = new ScrapeCN({ screenshotDir: 'output/multi-site/screenshots' });
+  const all = {};
 
   try {
-    for (const key of siteKeys) {
-      const preset = presets[key];
-      if (!preset) {
-        console.log(`[跳过] 未知预设: ${key}`);
-        continue;
-      }
-
-      console.log(`=== ${preset.name} (${key}) ===`);
+    for (const key of keys) {
+      if (!presets[key]) { console.log(`[跳过] ${key}`); continue; }
+      console.log(`=== ${presets[key].name} ===`);
       try {
         const items = await scraper.scrape(key);
-        allResults[key] = {
-          name: preset.name,
-          url: preset.url,
-          scrapedAt: new Date().toISOString(),
-          count: items.length,
-          items,
-        };
-        console.log(`  ${items.length} 条数据`);
-        items.slice(0, 3).forEach(item => console.log(`  · ${item.title}`));
-        if (items.length > 3) console.log(`  ...还有 ${items.length - 3} 条`);
+        all[key] = { name: presets[key].name, count: items.length, items, scrapedAt: new Date().toISOString() };
+        console.log(`  ${items.length} 条`);
+        items.slice(0, 3).forEach(i => console.log(`  · ${i.title}`));
       } catch (e) {
-        console.log(`  [错误] ${e.message}`);
-        allResults[key] = { name: preset.name, error: e.message, items: [] };
+        console.log(`  错误: ${e.message}`);
+        all[key] = { name: presets[key].name, error: e.message };
       }
       console.log();
     }
@@ -54,22 +41,11 @@ async function main() {
     await scraper.close();
   }
 
-  // 保存汇总
-  fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-  const outPath = path.join(OUTPUT_DIR, 'results.json');
-  fs.writeFileSync(outPath, JSON.stringify(allResults, null, 2), 'utf-8');
+  fs.mkdirSync('output/multi-site', { recursive: true });
+  fs.writeFileSync(OUTPUT, JSON.stringify(all, null, 2), 'utf-8');
 
-  // 打印汇总
-  console.log('='.repeat(50));
-  console.log('汇总：');
-  let total = 0;
-  for (const [key, result] of Object.entries(allResults)) {
-    const count = result.count || 0;
-    total += count;
-    console.log(`  ${result.name}: ${count} 条${result.error ? ' (失败)' : ''}`);
-  }
-  console.log(`总计: ${total} 条`);
-  console.log(`保存到: ${outPath}`);
+  const total = Object.values(all).reduce((s, r) => s + (r.count || 0), 0);
+  console.log(`总计: ${total} 条 → ${OUTPUT}`);
 }
 
 main().catch(console.error);

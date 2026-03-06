@@ -12,10 +12,10 @@
  *   'img @src'     → 取 img 的 src 属性
  */
 
-const { ChinaScraper } = require('../');
+const { ScrapeCN } = require('../');
 
 async function main() {
-  const scraper = new ChinaScraper();
+  const scraper = new ScrapeCN();
 
   try {
     const items = await scraper.scrape('https://hr.163.com/job-list.html?workType=1&lang=zh', {
