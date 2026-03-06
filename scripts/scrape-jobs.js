@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 /**
- * 全自动岗位抓取器 v2 - 精准提取每个岗位的详情链接
+ * 全自动岗位抓取器 v3 - 搜索框交互 + API 拦截 + 多策略 fallback
  *
- * v1 的问题：通用提取器把导航链接、分类标签、JD 正文碎片都当成了岗位。
- * v2 的改进：
- *   - 为飞书门户、字节跳动、腾讯等主流平台写专用提取器
- *   - 点击岗位卡片获取详情 URL（SPA 不在 DOM 里放 <a> 标签）
- *   - 自动翻页获取更多结果
- *   - URL 模式过滤：只保留岗位详情页 URL，过滤掉导航/分类链接
- *   - 去重：基于 URL 或标题去重，不会重复抓取同一岗位
+ * v2 → v3 的核心变化：
+ *   - 字节跳动：URL 参数筛选 → 搜索框输入"产品经理" + 点击"上海"
+ *   - 腾讯：DOM 提取 → API 响应拦截（page.on("response")）
+ *   - B站：新增专用提取器，domcontentloaded + 15s 等待
+ *   - 飞书门户：详情页登录墙 → 从列表页卡片提取 JD 摘要
+ *   - 通用策略升级：搜索框交互优先，URL 参数作为 fallback
  *
  * 用法：
  *   node scripts/scrape-jobs.js                       # 抓取所有预设站点
@@ -52,18 +51,23 @@ const SITES = {
   // --- 大厂官网（各有专用提取器）---
   bytedance: {
     name: '字节跳动',
-    url: 'https://jobs.bytedance.com/experienced/position?keywords=&category=6704215862603155720&location=CT_51',
+    url: 'https://jobs.bytedance.com/experienced/position',  // v3: 不带 URL 参数
     type: 'bytedance',
+    searchKeyword: '产品经理',  // v3: 用搜索框输入
+    locationFilter: '上海',     // v3: 点击筛选
   },
   tencent: {
     name: '腾讯',
-    url: 'https://careers.tencent.com/search.html?pcid=40001&locationId=2156',
+    url: 'https://careers.tencent.com/search.html',  // v3: 基础 URL
     type: 'tencent',
+    apiPath: '/tencentcareer/api/post/Query',  // v3: API 拦截路径
+    apiParams: 'timestamp=0&countryId=&cityId=2156&bgIds=&productId=&categoryId=&parentCategoryId=&attrId=&keyword=产品&pageIndex=0&pageSize=20&language=zh-cn&area=cn',
   },
   bilibili: {
     name: 'B站',
     url: 'https://jobs.bilibili.com/social/positions',
-    type: 'generic',
+    type: 'bilibili',
+    searchKeyword: 'AI',
   },
 
   // --- 其他公司官网 ---
@@ -104,23 +108,22 @@ function parseArgs() {
 
 // ========= 工具函数 =========
 
-// 判断 URL 是否像岗位详情页（而非导航/分类页）
 function isJobDetailUrl(url) {
   if (!url) return false;
   const detailPatterns = [
-    /\/position\/\d+/,           // 飞书门户: /position/7579523111286147366/detail
-    /\/job_detail\//,            // Boss直聘
-    /\/job\/\d+/,                // 通用
-    /\/jobs?\/.+\/\d+/,          // 通用带 ID
-    /\/career.*\/\d+/,           // career 页面
-    /\/detail/,                  // 详情页
-    /[?&]id=\d+/,               // query 参数 ID
-    /\/positions?\/.+\d{4,}/,    // 带长数字 ID 的 position 页
+    /\/position\/\d+/,
+    /\/job_detail\//,
+    /\/job\/\d+/,
+    /\/jobs?\/.+\/\d+/,
+    /\/career.*\/\d+/,
+    /\/detail/,
+    /[?&]id=\d+/,
+    /\/positions?\/.+\d{4,}/,
+    /[?&]postId=\d+/,
   ];
   return detailPatterns.some(p => p.test(url));
 }
 
-// 去重：基于 URL 或标题
 function deduplicateJobs(jobs) {
   const seen = new Set();
   return jobs.filter(j => {
@@ -132,8 +135,8 @@ function deduplicateJobs(jobs) {
 }
 
 // ========= 飞书招聘门户专用提取器 =========
+// v3 改进：从列表页卡片提取 JD 摘要（详情页有登录墙不渲染 JD）
 async function extractFeishu(page, keywords, maxPages) {
-  // 等待 SPA 渲染
   await page.waitForTimeout(5000);
 
   // 尝试切换到"社会招聘"
@@ -149,14 +152,11 @@ async function extractFeishu(page, keywords, maxPages) {
   }
 
   const allJobs = [];
-
-  // 逐个关键词搜索（飞书门户搜索框只能输一个词）
-  const searchKeywords = keywords.slice(0, 3); // 最多搜 3 个避免太慢
+  const searchKeywords = keywords.slice(0, 3);
 
   for (const kw of searchKeywords) {
     console.log(`  飞书搜索: "${kw}"`);
     try {
-      // 清空并输入关键词
       const searchInput = page.locator(
         'input[placeholder*="搜索"], input[placeholder*="search"], input[type="search"]'
       ).first();
@@ -167,42 +167,36 @@ async function extractFeishu(page, keywords, maxPages) {
         await searchInput.press('Enter');
         await page.waitForTimeout(4000);
       }
-    } catch(e) {
-      // 没有搜索框，直接提取当前页面
-    }
+    } catch(e) {}
 
-    // 提取当前页面的岗位卡片
     for (let p = 0; p < maxPages; p++) {
       const jobs = await page.evaluate(() => {
         const results = [];
-        // 飞书门户的岗位卡片通常是可点击的 div/a，包含职位链接
-        // URL 模式: /index/position/{id}/detail
         document.querySelectorAll('a[href*="/position/"]').forEach(a => {
           const href = a.href;
           if (!href.includes('/detail') && !href.match(/\/position\/\d+/)) return;
 
-          // 获取最近的卡片容器来提取完整信息
+          // v3: 获取整个卡片的完整文本作为 JD 摘要
           const card = a.closest('[class*="item"], [class*="card"], li, div') || a;
           const fullText = (card.textContent || '').trim().replace(/\s+/g, ' ');
 
-          // 提取岗位名（通常是链接文本的第一部分，在城市/类别之前）
           const titleMatch = fullText.match(/^(.+?)(?:北京|上海|深圳|杭州|广州|成都|旧金山|伦敦|远程|社招|校招|实习)/);
           const title = titleMatch ? titleMatch[1].trim() : (a.textContent || '').trim().split(/\s/)[0];
 
-          // 提取城市
           const locationMatch = fullText.match(/((?:北京|上海|深圳|杭州|广州|成都|旧金山|远程)(?:、(?:北京|上海|深圳|杭州|广州|成都|旧金山|远程))*)/);
           const location = locationMatch ? locationMatch[1] : '';
 
-          // 提取类别
           const categoryMatch = fullText.match(/(社招全职|社招实习|校招|实习)/);
           const jobType = categoryMatch ? categoryMatch[1] : '';
 
-          // 提取部门/职能
-          const deptMatch = fullText.match(/(产品\s*\/?\s*策划\s*\/?\s*项目|研发|设计|市场|运营|销售|互联网\s*\/?\s*电子\s*\/?\s*网游)/);
-          const department = deptMatch ? deptMatch[1].replace(/\s+/g, '') : '';
-
           if (title && title.length > 2 && title.length < 80) {
-            results.push({ title, url: href, location, jobType, department });
+            results.push({
+              title,
+              url: href,
+              location,
+              jobType,
+              jdSummary: fullText.slice(0, 1000),  // v3: 保存列表页的 JD 摘要
+            });
           }
         });
         return results;
@@ -210,18 +204,14 @@ async function extractFeishu(page, keywords, maxPages) {
 
       allJobs.push(...jobs);
       console.log(`    第 ${p + 1} 页: ${jobs.length} 条`);
-
       if (jobs.length === 0) break;
 
-      // 尝试翻页
       try {
         const nextBtn = page.locator('button:has-text("下一页"), [class*="next"], [aria-label="next"]').first();
         if (await nextBtn.isVisible({ timeout: 1000 }) && await nextBtn.isEnabled({ timeout: 1000 })) {
           await nextBtn.click();
           await page.waitForTimeout(3000);
-        } else {
-          break;
-        }
+        } else break;
       } catch(e) { break; }
     }
   }
@@ -230,44 +220,60 @@ async function extractFeishu(page, keywords, maxPages) {
 }
 
 // ========= 字节跳动专用提取器 =========
-async function extractBytedance(page, maxPages) {
+// v3 改进：搜索框交互代替 URL 参数（URL 参数已失效）
+async function extractBytedance(page, site, maxPages) {
   await page.waitForTimeout(5000);
 
-  const allJobs = [];
+  // v3: 搜索框交互
+  const searchKeyword = site.searchKeyword || '产品经理';
+  const locationFilter = site.locationFilter || '上海';
 
-  // 字节跳动官网需要等待岗位列表加载（通过检测列表元素出现）
+  console.log(`  搜索框输入: "${searchKeyword}"`);
+  try {
+    const searchInput = await page.$('input[type="text"]');
+    if (searchInput) {
+      await searchInput.click();
+      await searchInput.fill(searchKeyword);
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(5000);
+    }
+  } catch(e) {
+    console.log(`  搜索框交互失败: ${e.message}`);
+  }
+
+  // v3: 点击地区筛选
+  console.log(`  点击筛选: "${locationFilter}"`);
+  try {
+    const filterBtn = await page.$(`text=${locationFilter}`);
+    if (filterBtn) {
+      await filterBtn.click();
+      await page.waitForTimeout(3000);
+    }
+  } catch(e) {}
+
+  // 等待岗位列表加载
   try {
     await page.waitForSelector('a[href*="/position/"]', { timeout: 10000 });
   } catch(e) {
-    // 可能确实没有结果，或者需要手动选筛选条件
-    console.log('  提示: 字节跳动官网需要先在左侧选择筛选条件（职位类别 + 工作地点）');
-    console.log('  如果显示 0 结果，请在浏览器中手动操作筛选器，然后按回车继续...');
-    await new Promise(resolve => {
-      const timeout = setTimeout(resolve, 5000); // 5s 后自动继续
-      process.stdin.once('data', () => { clearTimeout(timeout); resolve(); });
-    });
-    await page.waitForTimeout(2000);
+    console.log('  未找到岗位链接，尝试截图诊断...');
   }
+
+  const allJobs = [];
 
   for (let p = 0; p < maxPages; p++) {
     const jobs = await page.evaluate(() => {
       const results = [];
-      // 字节跳动岗位链接格式: /experienced/position/{id}
       document.querySelectorAll('a[href*="/position/"]').forEach(a => {
         const href = a.href;
-        // 过滤掉导航链接（如 "产品与技术" 分类页）
         if (href.includes('/page-') || href.includes('/position?')) return;
-        // 必须包含数字 ID
         if (!/\/position\/\d+/.test(href)) return;
 
         const card = a.closest('[class*="item"], [class*="card"], li, div') || a;
         const fullText = (card.textContent || '').trim().replace(/\s+/g, ' ');
         const linkText = (a.textContent || '').trim().replace(/\s+/g, ' ');
 
-        // 岗位标题通常是链接文本
         const title = linkText.length > 2 && linkText.length < 100
           ? linkText : fullText.slice(0, 80);
-
         const locationMatch = fullText.match(/(上海|北京|深圳|杭州|广州|成都)/);
 
         if (title && title.length > 2) {
@@ -283,16 +289,14 @@ async function extractBytedance(page, maxPages) {
 
     allJobs.push(...jobs);
     console.log(`  第 ${p + 1} 页: ${jobs.length} 条`);
-
     if (jobs.length === 0) break;
 
-    // 翻页
     try {
       const nextBtn = page.locator('[class*="next"], button:has-text("下一页"), [aria-label*="next"]').first();
       if (await nextBtn.isVisible({ timeout: 1000 }) && await nextBtn.isEnabled({ timeout: 1000 })) {
         await nextBtn.click();
         await page.waitForTimeout(3000);
-      } else { break; }
+      } else break;
     } catch(e) { break; }
   }
 
@@ -300,113 +304,225 @@ async function extractBytedance(page, maxPages) {
 }
 
 // ========= 腾讯专用提取器 =========
-async function extractTencent(page, maxPages) {
-  await page.waitForTimeout(5000);
+// v3 改进：API 响应拦截，获取结构化 JSON 数据
+async function extractTencent(page, site) {
+  const capturedJobs = [];
 
-  const allJobs = [];
+  // v3: 注册 API 响应拦截器
+  const apiPath = site.apiPath || '/tencentcareer/api/post/Query';
+  page.on('response', async (response) => {
+    const url = response.url();
+    if (!url.includes(apiPath)) return;
 
-  for (let p = 0; p < maxPages; p++) {
-    // 腾讯招聘的岗位卡片是 SPA 渲染的，需要点击才跳转
-    // 但每个卡片内部有一个"复制链接"按钮，或者可以从点击行为推断 URL
-    const jobs = await page.evaluate(() => {
-      const results = [];
-      // 腾讯岗位卡片通常有标题 + 城市 + 部门 + 经验
-      // 页面文本结构: "岗位名\n城市\n部门\n经验\n更新日期\nJD..."
-      const cards = document.querySelectorAll('[class*="recruit-list"] > div, [class*="job-item"], [class*="position-item"]');
+    try {
+      const json = await response.json();
+      const posts = json?.Data?.Posts || [];
+      for (const post of posts) {
+        capturedJobs.push({
+          title: post.PostName || post.RecruitPostName || '',
+          url: `https://careers.tencent.com/jobdesc.html?postId=${post.PostId}`,
+          location: post.LocationName || '',
+          department: post.CategoryName || '',
+          lastUpdate: post.LastUpdateTime || '',
+          bgName: post.BGName || '',
+          source: 'api-intercept',
+        });
+      }
+      console.log(`  API 拦截到 ${posts.length} 条岗位`);
+    } catch (e) {
+      // 非 JSON 响应，跳过
+    }
+  });
 
-      if (cards.length > 0) {
+  // 导航到腾讯招聘页面，触发 API 调用
+  const urlWithParams = site.apiParams
+    ? `${site.url}?pcid=40001&locationId=2156`
+    : site.url;
+
+  await page.goto(urlWithParams, {
+    waitUntil: 'domcontentloaded',
+    timeout: 30000,
+  });
+  await page.waitForTimeout(8000);
+
+  // 如果 API 拦截已获取数据，直接返回
+  if (capturedJobs.length > 0) {
+    return deduplicateJobs(capturedJobs);
+  }
+
+  // fallback: 主动调用 API（同源 fetch）
+  console.log('  API 拦截未触发，尝试主动调用...');
+  try {
+    const apiParams = site.apiParams || 'timestamp=0&countryId=&cityId=2156&bgIds=&productId=&categoryId=&parentCategoryId=&attrId=&keyword=产品&pageIndex=0&pageSize=20&language=zh-cn&area=cn';
+    const data = await page.evaluate(async (params) => {
+      const res = await fetch(`/tencentcareer/api/post/Query?${params}`);
+      return res.json();
+    }, apiParams);
+
+    const posts = data?.Data?.Posts || [];
+    for (const post of posts) {
+      capturedJobs.push({
+        title: post.PostName || post.RecruitPostName || '',
+        url: `https://careers.tencent.com/jobdesc.html?postId=${post.PostId}`,
+        location: post.LocationName || '',
+        department: post.CategoryName || '',
+        lastUpdate: post.LastUpdateTime || '',
+        source: 'api-fetch',
+      });
+    }
+    console.log(`  API fetch 获取 ${posts.length} 条岗位`);
+  } catch (e) {
+    console.log(`  API fetch 失败: ${e.message}`);
+  }
+
+  // 如果 API 都没数据，fallback 到 DOM 提取
+  if (capturedJobs.length === 0) {
+    console.log('  fallback 到 DOM 提取...');
+    return await extractTencentDOM(page);
+  }
+
+  return deduplicateJobs(capturedJobs);
+}
+
+// 腾讯 DOM 提取 fallback
+async function extractTencentDOM(page) {
+  const jobs = await page.evaluate(() => {
+    const results = [];
+    const cards = document.querySelectorAll('[class*="recruit-list"] > div, [class*="job-item"], [class*="position-item"]');
+
+    if (cards.length > 0) {
+      cards.forEach(card => {
+        const text = (card.textContent || '').trim();
+        const link = card.querySelector('a');
+        const href = link ? link.href : '';
+        const titleEl = card.querySelector('h4, h3, [class*="title"], [class*="name"]');
+        const title = titleEl ? titleEl.textContent.trim() : '';
+        const locationMatch = text.match(/(上海|北京|深圳|杭州|广州|成都|西安)/);
+
+        if (title && title.length > 4 && title.length < 100) {
+          results.push({
+            title,
+            url: href,
+            location: locationMatch ? locationMatch[1] : '',
+            source: 'dom',
+          });
+        }
+      });
+    }
+    return results;
+  });
+
+  return deduplicateJobs(jobs);
+}
+
+// ========= B站专用提取器 =========
+// v3 新增：B站需要 domcontentloaded + 超长等待，搜索框交互
+async function extractBilibili(page, site) {
+  // B站特殊：初始加载需要 10-15 秒
+  console.log('  等待 B站 SPA 渲染（15s）...');
+  await page.waitForTimeout(15000);
+
+  // v3: 搜索框交互
+  const searchKeyword = site.searchKeyword || 'AI';
+  console.log(`  搜索: "${searchKeyword}"`);
+  try {
+    const searchInput = await page.$('input[placeholder*="搜索"], input[type="text"]');
+    if (searchInput) {
+      await searchInput.click();
+      await searchInput.fill(searchKeyword);
+      const searchBtn = await page.$('button:has-text("搜索")');
+      if (searchBtn) await searchBtn.click();
+      else await page.keyboard.press('Enter');
+      await page.waitForTimeout(8000);  // B站搜索后也需要很长时间
+    }
+  } catch(e) {
+    console.log(`  搜索框交互失败: ${e.message}`);
+  }
+
+  // 提取岗位
+  const jobs = await page.evaluate(() => {
+    const results = [];
+    const seen = new Set();
+
+    // 策略 1: 找 <a> 标签指向 positions 页面的链接
+    document.querySelectorAll('a[href*="positions"]').forEach(a => {
+      const href = a.href;
+      if (seen.has(href)) return;
+      seen.add(href);
+
+      const card = a.closest('[class*="item"], [class*="card"], li') || a;
+      const text = (card.textContent || '').trim().replace(/\s+/g, ' ');
+      const linkText = (a.textContent || '').trim();
+
+      if (linkText.length > 2 && linkText.length < 100) {
+        results.push({
+          title: linkText,
+          url: href,
+          fullText: text.slice(0, 500),
+        });
+      }
+    });
+
+    // 策略 2: SPA 卡片（可能没有 <a> 标签）
+    if (results.length === 0) {
+      const cardSelectors = [
+        '[class*="position-item"]', '[class*="job-card"]',
+        '[class*="job-item"]', '[class*="recruit"] li',
+      ];
+      for (const sel of cardSelectors) {
+        const cards = document.querySelectorAll(sel);
+        if (cards.length === 0) continue;
+
         cards.forEach(card => {
-          const text = (card.textContent || '').trim();
-          const link = card.querySelector('a');
-          const href = link ? link.href : '';
-
-          // 尝试从卡片结构中提取字段
-          const titleEl = card.querySelector('h4, h3, [class*="title"], [class*="name"]');
+          const titleEl = card.querySelector('h3, h4, [class*="title"], [class*="name"]');
           const title = titleEl ? titleEl.textContent.trim() : '';
-          const locationMatch = text.match(/(上海|北京|深圳|杭州|广州|成都|西安)/);
-          const deptMatch = text.match(/(WXG|IEG|CSIG|TEG|PCG|CDG|[A-Z]{2,4}技术|[A-Z]{2,4}产品)/);
-          const expMatch = text.match(/(\d+年以上工作经验|经验不限)/);
+          const text = (card.textContent || '').trim().replace(/\s+/g, ' ');
+          const locationMatch = text.match(/(上海|北京|深圳|杭州|广州|成都)/);
 
-          if (title && title.length > 4 && title.length < 100) {
+          if (title && title.length > 2 && title.length < 80 && !seen.has(title)) {
+            seen.add(title);
             results.push({
               title,
-              url: href,
+              url: '',
               location: locationMatch ? locationMatch[1] : '',
-              department: deptMatch ? deptMatch[1] : '',
-              experience: expMatch ? expMatch[1] : '',
+              fullText: text.slice(0, 500),
+              source: 'card-no-url',
             });
           }
         });
-      }
 
-      // 备选：从页面文本结构中解析（腾讯的 DOM 经常变化）
-      if (results.length === 0) {
-        const text = document.body?.innerText || '';
-        // 腾讯岗位列表的文本格式通常是: "岗位名\n城市\n部门..."
-        const lines = text.split('\n').map(l => l.trim()).filter(l => l);
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          // 岗位名特征：包含中文 + 英文/符号，长度 5-60，后面跟城市名
-          if (line.length >= 5 && line.length <= 60) {
-            const nextLine = lines[i + 1] || '';
-            const isCityNext = /(上海|北京|深圳|杭州|广州|成都|西安)/.test(nextLine);
-            const isJobTitle = /[-—·]/.test(line) || // 带分隔符的标题如 "元宝-大模型产品经理"
-                              /(产品|工程师|设计师|经理|算法|运营|策略|开发|总监)/.test(line);
-            if (isJobTitle && isCityNext) {
-              const dept = lines[i + 2] || '';
-              const exp = lines[i + 3] || '';
-              results.push({
-                title: line,
-                url: '', // 腾讯 SPA 没有直接 URL，后续需要点击获取
-                location: nextLine.match(/(上海|北京|深圳|杭州|广州|成都|西安)/)?.[1] || nextLine,
-                department: /^[A-Z]/.test(dept) ? dept : '',
-                experience: /经验/.test(exp) ? exp : '',
-              });
-            }
+        if (results.length > 0) break;
+      }
+    }
+
+    // 策略 3: 纯文本解析（最后手段）
+    if (results.length === 0) {
+      const text = document.body?.innerText || '';
+      const pmKeywords = ['产品经理', 'AI产品', 'AIGC产品', 'AI战略'];
+      const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (pmKeywords.some(k => line.includes(k)) && line.length < 80) {
+          const locationLine = lines[i + 1] || '';
+          const locationMatch = locationLine.match(/(上海|北京|深圳|杭州|广州)/);
+          if (!seen.has(line)) {
+            seen.add(line);
+            results.push({
+              title: line,
+              url: '',
+              location: locationMatch ? locationMatch[1] : '',
+              source: 'text-parse',
+            });
           }
         }
       }
-
-      return results;
-    });
-
-    allJobs.push(...jobs);
-    console.log(`  第 ${p + 1} 页: ${jobs.length} 条`);
-
-    if (jobs.length === 0) break;
-
-    // 翻页
-    try {
-      const nextBtn = page.locator('[class*="next"]:not([class*="disabled"]), button:has-text("下一页")').first();
-      if (await nextBtn.isVisible({ timeout: 1000 })) {
-        await nextBtn.click();
-        await page.waitForTimeout(3000);
-      } else { break; }
-    } catch(e) { break; }
-  }
-
-  // 如果没有 URL，尝试逐个点击岗位卡片获取详情 URL
-  const jobsWithoutUrl = allJobs.filter(j => !j.url);
-  if (jobsWithoutUrl.length > 0 && allJobs.some(j => j.url)) {
-    console.log(`  ${jobsWithoutUrl.length} 条岗位缺少 URL，已有 URL 的会保留`);
-  } else if (jobsWithoutUrl.length > 0) {
-    console.log(`  尝试点击岗位卡片获取详情 URL...`);
-    const cards = await page.$$('[class*="recruit-list"] > div, [class*="job-item"]');
-    for (let i = 0; i < Math.min(cards.length, allJobs.length); i++) {
-      try {
-        await cards[i].click();
-        await page.waitForTimeout(1500);
-        const detailUrl = page.url();
-        if (detailUrl !== allJobs[i].url && isJobDetailUrl(detailUrl)) {
-          allJobs[i].url = detailUrl;
-        }
-        await page.goBack({ waitUntil: 'domcontentloaded', timeout: 10000 });
-        await page.waitForTimeout(1000);
-      } catch(e) { break; }
     }
-  }
 
-  return deduplicateJobs(allJobs);
+    return results;
+  });
+
+  console.log(`  提取到 ${jobs.length} 条岗位`);
+  return deduplicateJobs(jobs);
 }
 
 // ========= 通用提取器（改进版）=========
@@ -420,13 +536,12 @@ async function extractGeneric(page, keywords, maxPages) {
       const results = [];
       const seen = new Set();
 
-      // 策略 1: 找岗位详情链接（URL 含 position/job/career + 数字ID）
+      // 策略 1: 找岗位详情链接
       document.querySelectorAll('a').forEach(a => {
         const href = a.href || '';
         if (!href || seen.has(href)) return;
         if (href.startsWith('javascript:') || href === '#') return;
 
-        // 只要岗位详情页 URL
         const isDetail = /(position|job|career|detail).*\d{4,}/.test(href) ||
                         /\/\d{6,}(\/|$|\.)/.test(href);
         if (!isDetail) return;
@@ -435,7 +550,6 @@ async function extractGeneric(page, keywords, maxPages) {
         const fullText = (card.textContent || '').trim().replace(/\s+/g, ' ');
         const linkText = (a.textContent || '').trim().replace(/\s+/g, ' ');
 
-        // 岗位名 = 链接文本（如果合理长度），否则从卡片提取
         let title = '';
         if (linkText.length > 2 && linkText.length < 80) {
           title = linkText;
@@ -456,7 +570,7 @@ async function extractGeneric(page, keywords, maxPages) {
         }
       });
 
-      // 策略 2: 岗位列表卡片（可能没有 <a> 标签，SPA 用 click handler）
+      // 策略 2: 岗位卡片（无 <a> 标签的 SPA）
       if (results.length === 0) {
         const cardSelectors = [
           '[class*="job-item"]', '[class*="position-item"]', '[class*="career-item"]',
@@ -487,7 +601,7 @@ async function extractGeneric(page, keywords, maxPages) {
             }
           });
 
-          if (results.length > 0) break; // 找到了就不用试其他 selector
+          if (results.length > 0) break;
         }
       }
 
@@ -496,10 +610,8 @@ async function extractGeneric(page, keywords, maxPages) {
 
     allJobs.push(...jobs);
     console.log(`  第 ${p + 1} 页: ${jobs.length} 条`);
-
     if (jobs.length === 0) break;
 
-    // 翻页
     try {
       const nextBtn = page.locator(
         'button:has-text("下一页"), [class*="next"]:not([class*="disabled"]), [aria-label*="next"], a:has-text(">")'
@@ -507,7 +619,7 @@ async function extractGeneric(page, keywords, maxPages) {
       if (await nextBtn.isVisible({ timeout: 1000 }) && await nextBtn.isEnabled({ timeout: 1000 })) {
         await nextBtn.click();
         await page.waitForTimeout(3000);
-      } else { break; }
+      } else break;
     } catch(e) { break; }
   }
 
@@ -520,9 +632,11 @@ async function extractJobs(page, site, keywords, maxPages) {
     case 'feishu':
       return await extractFeishu(page, keywords, maxPages);
     case 'bytedance':
-      return await extractBytedance(page, maxPages);
+      return await extractBytedance(page, site, maxPages);
     case 'tencent':
-      return await extractTencent(page, maxPages);
+      return await extractTencent(page, site);
+    case 'bilibili':
+      return await extractBilibili(page, site);
     default:
       return await extractGeneric(page, keywords, maxPages);
   }
@@ -562,23 +676,24 @@ async function main() {
     args: ['--disable-blink-features=AutomationControlled'],
   });
 
-  const context = await browser.newContext({
-    locale: 'zh-CN',
-    viewport: { width: 1280, height: 900 },
-  });
-
   const allResults = {};
 
   for (const [key, site] of Object.entries(sitesToScrape)) {
     console.log(`\n=== ${site.name} (${key}) [${site.type}] ===`);
     console.log(`URL: ${site.url}`);
 
-    const page = await context.newPage();
+    // v3: 每个站点用独立的 page（避免同源问题）
+    const page = await browser.newPage();
     try {
-      await page.goto(site.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      // v3: B站用 domcontentloaded，其他站点也统一用 domcontentloaded
+      await page.goto(site.url, {
+        waitUntil: 'domcontentloaded',
+        timeout: site.type === 'bilibili' ? 45000 : 30000,
+      });
 
       // 截图
-      await page.waitForTimeout(3000);
+      const initialWait = site.type === 'bilibili' ? 3000 : 3000;
+      await page.waitForTimeout(initialWait);
       const screenshotPath = path.join(OUTPUT_DIR, `${key}-screenshot.png`);
       await page.screenshot({ path: screenshotPath, fullPage: false });
       console.log(`截图: ${screenshotPath}`);
@@ -587,7 +702,6 @@ async function main() {
       const jobs = await extractJobs(page, site, keywords, maxPages);
       console.log(`合计: ${jobs.length} 条不重复岗位`);
 
-      // 统计有 URL 的比例
       const withUrl = jobs.filter(j => j.url).length;
       if (jobs.length > 0) {
         console.log(`其中 ${withUrl} 条有详情 URL (${Math.round(withUrl/jobs.length*100)}%)`);
@@ -633,7 +747,6 @@ async function main() {
   console.log(`总计: ${totalJobs} 条岗位, ${totalWithUrl} 条有详情URL`);
   console.log(`结果已保存: ${summaryPath}`);
 
-  await context.close();
   await browser.close();
 }
 
